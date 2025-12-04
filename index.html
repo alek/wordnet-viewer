@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wordnet Viewer</title>
+
+  <!-- IBM Plex Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap"
+    rel="stylesheet"
+  >
+
+  <style>
+    :root {
+      --bg: #f5f5f5;
+      --fg: #111;
+      --muted: #666;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .frame {
+      width: min(1200px, 96vw);
+      min-height: 70vh;
+      padding: 3.5rem 3rem;
+      background: #fff;
+      border-radius: 24px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .header {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .14em;
+      color: var(--muted);
+      border-bottom: 1px solid #e5e5e5;
+      padding-bottom: .75rem;
+      margin-bottom: 2.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .pill {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.9rem;
+      border: 1px solid #e0e0e0;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .word-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 2.25rem;
+      align-items: center;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.9rem;
+      min-height: 0;
+    }
+
+    .word {
+      font-size: clamp(3.2rem, 5vw, 4.3rem);
+      font-weight: 500;
+      line-height: 1.15;          /* more vertical room */
+      padding-bottom: 0.15em;     /* extra space for descenders */
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow-x: hidden;         /* clip horizontally */
+      overflow-y: visible;        /* allow descenders to render */
+    }
+
+    .meta-value {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: clamp(0.9rem, 1.4vw, 1.1rem);
+      color: var(--muted);
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 2.5rem;
+      font-size: .8rem;
+      color: var(--muted);
+    }
+
+    .progress {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+
+    .progress-bar {
+      width: 140px;
+      height: 2px;
+      background: #e0e0e0;
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .progress-fill {
+      position: absolute;
+      top: 0; left: 0; bottom: 0;
+      background: #111;
+      width: 0%;
+      transition: width .4s ease-out;
+    }
+
+    button {
+      border: 1px solid #ddd;
+      background: #fff;
+      border-radius: 999px;
+      padding: .25rem .9rem;
+      text-transform: uppercase;
+      font-size: .75rem;
+      cursor: pointer;
+      letter-spacing: .12em;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="frame">
+    <div class="header">
+      <span>WORDNET · SINGLE TOKENS</span>
+      <span class="pill">tiktoken embedding ids</span>
+    </div>
+
+    <div class="word-grid">
+      <div class="panel">
+        <div id="word-0" class="word">...</div>
+        <div id="id-0" class="meta-value">...</div>
+      </div>
+      <div class="panel">
+        <div id="word-1" class="word">...</div>
+        <div id="id-1" class="meta-value">...</div>
+      </div>
+      <div class="panel">
+        <div id="word-2" class="word">...</div>
+        <div id="id-2" class="meta-value">...</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="progress">
+        <div class="progress-bar" id="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <span id="position-label">0 / 0</span>
+      </div>
+
+      <div class="controls">
+        <button id="prev-btn">Prev</button>
+        <button id="pause-btn">Play</button>
+        <button id="next-btn">Next</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const PATH  = "wordnet_single_tokens.tsv";
+  const SPEED = 100;
+
+  let entries = [];
+
+  // Three independent indices (all advance at same speed)
+  let idx0 = 0;
+  let idx1 = 0;
+  let idx2 = 0;
+  let startIndex = 0;   // for label + progress bar
+
+  let timer   = null;
+  let playing = false;
+
+  const wordEls = [
+    document.getElementById("word-0"),
+    document.getElementById("word-1"),
+    document.getElementById("word-2"),
+  ];
+
+  const idEls = [
+    document.getElementById("id-0"),
+    document.getElementById("id-1"),
+    document.getElementById("id-2"),
+  ];
+
+  const posEl  = document.getElementById("position-label");
+  const barEl  = document.getElementById("progress-bar");
+  const fillEl = document.getElementById("progress-fill");
+
+  const prevBtn  = document.getElementById("prev-btn");
+  const pauseBtn = document.getElementById("pause-btn");
+  const nextBtn  = document.getElementById("next-btn");
+
+  function parseTSV(text) {
+    return text
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith("#"))
+      .map(line => {
+        const p = line.split(/\t+/);
+        return { word: p[0], id: p[p.length - 1] };
+      });
+  }
+
+  function fmt(n) {
+    return n.toLocaleString("en-US");
+  }
+
+  // Seed indices from a chosen start, splitting remaining range into 3
+  function reseedFrom(start) {
+    if (!entries.length) return;
+
+    const len = entries.length;
+    startIndex = ((start % len) + len) % len;
+    idx0 = startIndex;
+
+    const remaining = len - startIndex;
+    if (remaining <= 0) {
+      idx1 = idx0;
+      idx2 = idx0;
+    } else {
+      const third = Math.floor(remaining / 3);
+      idx1 = (startIndex + third) % len;
+      idx2 = (startIndex + 2 * third) % len;
+    }
+  }
+
+  function render() {
+    if (!entries.length) {
+      wordEls.forEach(el => el.textContent = "No entries");
+      idEls.forEach(el   => el.textContent = "");
+      posEl.textContent = "0 / 0";
+      fillEl.style.width = "0%";
+      return;
+    }
+
+    wordEls[0].textContent = entries[idx0].word;
+    idEls[0].textContent   = entries[idx0].id;
+
+    wordEls[1].textContent = entries[idx1].word;
+    idEls[1].textContent   = entries[idx1].id;
+
+    wordEls[2].textContent = entries[idx2].word;
+    idEls[2].textContent   = entries[idx2].id;
+
+    posEl.textContent = `${fmt(startIndex + 1)} / ${fmt(entries.length)}`;
+    const ratio = entries.length > 1 ? startIndex / (entries.length - 1) : 0;
+    fillEl.style.width = (ratio * 100) + "%";
+  }
+
+  function advance(step) {
+    if (!entries.length) return;
+    const len = entries.length;
+
+    idx0 = (idx0 + step + len) % len;
+    idx1 = (idx1 + step + len) % len;
+    idx2 = (idx2 + step + len) % len;
+
+    startIndex = idx0;
+    render();
+  }
+
+  function next() { advance(1); }
+  function prev() { advance(-1); }
+
+  function start() {
+    if (playing || !entries.length) return;
+    playing = true;
+    pauseBtn.textContent = "Pause";
+    timer = setInterval(next, SPEED);
+  }
+
+  function stop() {
+    playing = false;
+    pauseBtn.textContent = "Play";
+    clearInterval(timer);
+  }
+
+  pauseBtn.onclick = () => (playing ? stop() : start());
+  nextBtn.onclick  = () => next();
+  prevBtn.onclick  = () => prev();
+
+  // drag-to-seek
+  let dragging = false;
+
+  function seek(clientX) {
+    if (!entries.length) return;
+    const rect = barEl.getBoundingClientRect();
+    let t = (clientX - rect.left) / rect.width;
+    t = Math.max(0, Math.min(1, t));
+    const newIndex = Math.floor(t * (entries.length - 1));
+    reseedFrom(newIndex);
+    render();
+  }
+
+  barEl.addEventListener("mousedown", e => {
+    dragging = true;
+    stop();
+    seek(e.clientX);
+  });
+
+  window.addEventListener("mousemove", e => {
+    if (dragging) seek(e.clientX);
+  });
+
+  window.addEventListener("mouseup", () => {
+    dragging = false;
+  });
+
+  // load data
+  fetch(PATH)
+    .then(r => r.text())
+    .then(text => {
+      entries = parseTSV(text);
+      if (entries.length) {
+        reseedFrom(0);
+      }
+      render();
+    });
+</script>
+</body>
+</html>
